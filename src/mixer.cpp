@@ -5,10 +5,10 @@ using namespace AlsaPlusPlus;
 constexpr long MINIMAL_VOLUME = 0;
 constexpr long MAXIMUM_VOLUME = 65535;
 
-Mixer::Mixer(std::string hw_device, std::string volume_element_name) :
+Mixer::Mixer(std::string hw_device, std::string element_name, bool not_volume) :
   err(0),
   device_name(hw_device),
-  simple_elem_name(volume_element_name)
+  simple_elem_name(element_name)
 {
   if ((err = snd_mixer_open(&mixer_handle, 0)) < 0)
     handle_error_code(err, true, "Cannot open handle to mixer device.");
@@ -33,8 +33,11 @@ Mixer::Mixer(std::string hw_device, std::string volume_element_name) :
     oss << "Could not find simple mixer element named " << simple_elem_name << ".";
     handle_error_code(static_cast<int>(std::errc::argument_out_of_domain), true, oss.str());
   }
-  if ((err = snd_mixer_selem_set_playback_volume_range (element_handle, MINIMAL_VOLUME, MAXIMUM_VOLUME)) < 0)
-    handle_error_code(err, true, "Cannot set element volume range.");
+
+  if (!not_volume) {
+    if ((err = snd_mixer_selem_set_playback_volume_range (element_handle, MINIMAL_VOLUME, MAXIMUM_VOLUME)) < 0)
+      handle_error_code(err, true, "Cannot set element volume range.");
+  }
 }
 
 Mixer::~Mixer()
@@ -106,7 +109,7 @@ bool Mixer::element_exists(std::string hw_device, std::string element_name)
     snd_mixer_close(temp_handle);
     return false;
   }
-  
+
   snd_mixer_close(temp_handle);
   return true;
 }
@@ -188,4 +191,49 @@ void Mixer::get_vol_range(long* min_vol, long* max_vol)
 
   if (err < 0)
     handle_error_code(err, false, "Cannot get min/max volume range.");
+}
+
+static int get_enum_item_index(snd_mixer_elem_t *elem, const char **ptrp)
+{
+  const char *ptr = *ptrp;
+  int items, i, len;
+
+  /* See snd_ctl_elem_init_enum_names() in sound/core/control.c. */
+  char name[64];
+
+  items = snd_mixer_selem_get_enum_items(elem);
+  if (items <= 0)
+    return -1;
+
+  for (i = 0; i < items; i++) {
+    if (snd_mixer_selem_get_enum_item_name(elem, i, sizeof(name)-1, name) < 0)
+      continue;
+
+    len = strlen(name);
+    if (! strncmp(name, ptr, len)) {
+      if (! ptr[len] || ptr[len] == ',' || ptr[len] == '\n') {
+        ptr += len;
+        *ptrp = ptr;
+        return i;
+      }
+    }
+  }
+  return -1;
+}
+void Mixer::set_enum_item(std::string item_name)
+{
+  unsigned int item = 0;
+  const char *ptr = item_name.c_str();
+  while (*ptr) {
+    int ival = get_enum_item_index(element_handle, &ptr);
+    if (ival < 0)
+      handle_error_code(err, true, "Cannot find enum item..");
+
+    if (snd_mixer_selem_set_enum_item(element_handle, (snd_mixer_selem_channel_id_t)item++, ival) < 0)
+      handle_error_code(err, true, "Cannot set enum item..");
+
+    /* skip separators */
+    while (*ptr == ',' || isspace(*ptr))
+      ptr++;
+  }
 }
